@@ -18,8 +18,9 @@ class PlayerGuesser(Star):
 
     def __init__(self, context: Context):
         super().__init__(context)
-        # 获取插件专属的数据目录
+        # --- 修复: 使用StarTools获取插件专属的数据目录 ---
         self.data_dir = StarTools.get_data_dir()
+        # --- 修复结束 ---
         self.active_games = {}
         self.players_list = []
         self.players_map = {}
@@ -59,7 +60,35 @@ class PlayerGuesser(Star):
             await self.context.send_message(umo, message_chain)
 
     async def initialize(self):
-        """插件初始化时，加载选手和战队排名数据。"""
+        """插件初始化时，自动迁移数据文件并加载数据。"""
+        # --- 新增的文件自动迁移逻辑 ---
+        # 1. 定义旧路径（代码目录）和新路径（数据目录）
+        old_players_path = Path(__file__).parent / "players.json"
+        new_players_path = self.data_dir / "players.json"
+        old_teams_path = Path(__file__).parent / "teams_top.json"
+        new_teams_path = self.data_dir / "teams_top.json"
+
+        # 确保数据目录存在
+        self.data_dir.mkdir(exist_ok=True)
+
+        # 2. 检查并迁移 players.json
+        if not new_players_path.exists() and old_players_path.exists():
+            try:
+                logger.info(f"检测到旧版数据文件，正在迁移 players.json 至: {new_players_path}")
+                old_players_path.rename(new_players_path)
+            except Exception as e:
+                logger.error(f"自动迁移 players.json 失败: {e}")
+
+        # 3. 检查并迁移 teams_top.json
+        if not new_teams_path.exists() and old_teams_path.exists():
+            try:
+                logger.info(f"检测到旧版数据文件，正在迁移 teams_top.json 至: {new_teams_path}")
+                old_teams_path.rename(new_teams_path)
+            except Exception as e:
+                logger.error(f"自动迁移 teams_top.json 失败: {e}")
+        # --- 文件迁移逻辑结束 ---
+
+        # 从规范路径加载选手数据
         players_path = self.data_dir / "players.json"
         if not players_path.exists():
             logger.error(f"选手数据文件未找到: {players_path}")
@@ -72,6 +101,7 @@ class PlayerGuesser(Star):
         except Exception as e:
             logger.error(f"加载 players.json 时发生错误: {e}")
 
+        # 从规范路径加载战队排名数据
         teams_path = self.data_dir / "teams_top.json"
         if not teams_path.exists():
             logger.warning(f"战队排名文件未找到: {teams_path}。难度分级将受影响。")
@@ -93,7 +123,8 @@ class PlayerGuesser(Star):
             yield event.plain_result("当前已有游戏正在进行中，请先完成后再开始新游戏！")
             return
 
-        difficulty_arg = event.message_str.strip()
+        parts = event.message_str.strip().split()
+        difficulty_arg = parts[-1] if parts else ""
         
         if difficulty_arg in self.DIFFICULTY_SETTINGS:
             difficulty = difficulty_arg
@@ -265,7 +296,7 @@ class PlayerGuesser(Star):
         feedback_parts = []
         is_win = True
 
-        # 注意：此处的反馈逻辑是之前讨论过的有问题的版本，遵从您的指示，本次仅修改数据路径
+        # 年龄
         if guessed_player.get('age') == secret_player.get('age'):
             feedback_parts.append(f"年龄: {guessed_player.get('age', '未知')}(√)")
         elif guessed_player.get('age', 0) > secret_player.get('age', 0):
@@ -275,27 +306,43 @@ class PlayerGuesser(Star):
             feedback_parts.append(f"年龄: {guessed_player.get('age', '未知')}(↑)")
             is_win = False
             
-        if guessed_player.get('role') == secret_player.get('role'):
-            feedback_parts.append(f"职责: {guessed_player.get('role', '未知')}(√)")
+        # 职责 (处理多职责字符串)
+        guessed_role_str = guessed_player.get('role', "")
+        secret_role_str = secret_player.get('role', "")
+        guessed_roles_set = set(r.strip() for r in guessed_role_str.split(' / '))
+        secret_roles_set = set(r.strip() for r in secret_role_str.split(' / '))
+        roles_display_str = guessed_role_str if guessed_role_str else "无"
+        if guessed_roles_set == secret_roles_set:
+            feedback_parts.append(f"职责: {roles_display_str}(√)")
+        elif guessed_roles_set.intersection(secret_roles_set):
+            feedback_parts.append(f"职责: {roles_display_str}(O)")
+            is_win = False
         else:
-            feedback_parts.append(f"职责: {guessed_player.get('role', '未知')}(×)")
+            feedback_parts.append(f"职责: {roles_display_str}(×)")
             is_win = False
             
+        # 国籍
         if guessed_player.get('nationality') == secret_player.get('nationality'):
             feedback_parts.append(f"国籍: {guessed_player.get('nationality', '未知')}(√)")
-        elif guessed_player.get('continent') == secret_player.get('continent'):
-            feedback_parts.append(f"国籍: {guessed_player.get('nationality', '未知')}(O)")
-            is_win = False
         else:
             feedback_parts.append(f"国籍: {guessed_player.get('nationality', '未知')}(×)")
             is_win = False
+        
+        # 地区
+        if guessed_player.get('continent') == secret_player.get('continent'):
+            feedback_parts.append(f"地区: {guessed_player.get('continent', '未知')}(√)")
+        else:
+            feedback_parts.append(f"地区: {guessed_player.get('continent', '未知')}(×)")
+            is_win = False
             
+        # 俱乐部
         if guessed_player.get('club') == secret_player.get('club'):
             feedback_parts.append(f"俱乐部: {guessed_player.get('club', '未知')}(√)")
         else:
             feedback_parts.append(f"俱乐部: {guessed_player.get('club', '未知')}(×)")
             is_win = False
 
+        # Major次数
         if guessed_player.get('major_participations') == secret_player.get('major_participations'):
             feedback_parts.append(f"Major次数: {guessed_player.get('major_participations', '未知')}(√)")
         elif guessed_player.get('major_participations', 0) > secret_player.get('major_participations', 0):
@@ -305,8 +352,7 @@ class PlayerGuesser(Star):
             feedback_parts.append(f"Major次数: {guessed_player.get('major_participations', '未知')}(↑)")
             is_win = False
         
-        is_win = all('(√)' in part for part in feedback_parts)
-
+        # --- 修复: 移除冗余的胜利判断 ---
         body = "\n".join(feedback_parts)
         full_feedback = f"{header}\n{body}"
         return full_feedback, is_win
